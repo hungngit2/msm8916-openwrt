@@ -25,6 +25,7 @@ Features modern **Linux 6.12 mainline kernel**, **ModemManager 1.24**, **Qualcom
   * 🔴 **Red LED** (`red:power`): Modem processor and subsystem health indicator.
 * **🔄 Bulletproof Sysupgrade**: Graceful pre-upgrade service teardown (`platform_pre_upgrade`) eliminates kernel linked-list panics during LuCI web and CLI firmware upgrades, backed by step-by-step diagnostic logging to stdout and `/dev/kmsg`.
 * **🛡️ HMU05 No-Sleep Fix**: Hardware-guarded native C patcher (`hmu05-patch-modem`) prevents Qualcomm Hexagon DSP 15-minute sleep stalls (`FUN_c03987e0` / `ERR_FATAL` bypass) with embedded SHA-256 header recalculation.
+* **📡 UF896 Modem Boot Fix**: `uf896-modem-online` forces the modem's DMS operating mode from `factory-test` (RF disabled at boot on this board) to `online` before ModemManager probes it, restoring LTE registration automatically on every boot.
 * **🚑 Reboot to Qualcomm EDL**: `reboot-edl` cleanly triggers Qualcomm Emergency Download (EDL / USB `05c6:9008`) mode without requiring hardware test-point access.
 * **⚙️ Reboot to Fastboot**: `reboot-fastboot` switches the device into Qualcomm Fastboot mode for bootloader-level recovery and flashing.
 * **🔧 Recovery Without Physical Access**: EDL and Fastboot reboot targets provide software-triggered recovery paths directly from a running OpenWrt system.
@@ -39,6 +40,7 @@ Features modern **Linux 6.12 mainline kernel**, **ModemManager 1.24**, **Qualcom
 | **`ufi001b`** | `generic-ufi001b` | Generic UFI001B 4G Stick   | MSM8916 | 512 MB | 4 GB eMMC | USB NCM, ACM, Wi-Fi AP, LTE, Reboot-to-EDL, Reboot-to-Fastboot, Ramoops                 |
 | **`uz801`**   | `yiming-uz801v3`  | YiMing UZ801 v3 Dongle     | MSM8916 | 512 MB | 4 GB eMMC | USB NCM, ACM, Wi-Fi AP, LTE, Reboot-to-EDL, Reboot-to-Fastboot, Swapped LED mapping     |
 | **`uf02`**    | `generic-uf02`    | Generic UF02 / UF2 Stick   | MSM8916 | 512 MB | 4 GB eMMC | USB NCM, ACM, Wi-Fi AP, LTE, Reboot-to-EDL, Reboot-to-Fastboot                          |
+| **`uf896`**   | `generic-uf896`   | Generic UF896 (v1.1)       | MSM8916 | 384 MB | 2.4 GB eMMC | USB NCM, ACM, Wi-Fi AP, Reboot-to-EDL, Reboot-to-Fastboot, Modem Factory-Test-Mode Boot Fix; LTE data connection not yet working — see note below |
 
 ---
 
@@ -228,6 +230,9 @@ An existing EXT filesystem is **not reformatted merely because it requires repai
 ---
 
 ## 📶 SIM Detection, Carrier Auto-Provisioning & Reboot Behavior
+
+> [!WARNING]
+> **UF896 only**: this whole section describes the normal ModemManager-driven flow, which does not yet work on `uf896`. The `uf896-modem-online` fix (above) gets the modem's radio online and registered on the network at the QMI level, but ModemManager's own SIM-status probe fails against this board's firmware (`Couldn't get SIM lock status after 7 retries`), so it never reaches the point of running `qcom-carrier-autocfg` or bringing up a data bearer automatically. A stable automatic data connection on `uf896` still needs either a ModemManager fix or a custom QMI connection manager — tracked as a follow-up, not yet implemented.
 
 When you plug in the modem stick with a SIM card inserted (or after swapping to a different cellular carrier), the stick will **automatically reboot once** after approximately 10–15 seconds of uptime.
 
