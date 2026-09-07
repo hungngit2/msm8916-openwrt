@@ -98,7 +98,7 @@ lookup_carrier_profile() {
 		CARRIER_IPTYPE="ipv4v6"
 		CARRIER_MODE="4g"
 		CARRIER_MBN="generic/apac/airtel/commerci/mcfg_sw.mbn"
-	elif echo "$op_name" | grep -qi -E "vi|vodafone|idea"; then
+	elif echo "$op_name" | grep -qi -E "vodafone|idea|(^|[^a-z])vi([^a-z]|$)"; then
 		CARRIER_NAME="Vodafone Idea"
 		CARRIER_APN="portalnmms"
 		CARRIER_IPTYPE="ipv4v6"
