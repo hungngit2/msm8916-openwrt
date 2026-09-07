@@ -166,4 +166,11 @@
 # Pakistan (MCC 410)
 41001	Jazz	jazzconnect.mobilinkworld.com	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
 41004	Zong	zonginternet	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
+
+# Vietnam (MCC 452)
+# 45202 (VinaPhone) verified on real UF896 hardware. 45204/45201 are the
+# standard public APNs for these carriers, not independently verified here.
+45202	VinaPhone	vinaphone	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
+45204	Viettel	v-internet	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
+45201	MobiFone	m-wap	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
 41006	Telenor PK	internet	ipv4v6	4g	generic/common/row/gen_3gpp/mcfg_sw.mbn
