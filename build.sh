@@ -244,9 +244,21 @@ clone_openwrt() {
 
     msg "Cloning OpenWrt..."
 
-    git clone \
-        https://git.openwrt.org/openwrt/openwrt.git \
-        "$OPENWRT_DIR"
+    if [ -d "$OPENWRT_DIR" ]; then
+        # $OPENWRT_DIR can already exist without being a git checkout yet --
+        # e.g. in CI, the build-cache step restores openwrt/dl and
+        # openwrt/staging_dir/* before this runs, which creates the parent
+        # directory. `git clone` refuses a non-empty target, so initialize
+        # the repo in place instead; checkout_openwrt() fetches and checks
+        # out the actual tree right after this returns.
+        git init "$OPENWRT_DIR"
+        git -C "$OPENWRT_DIR" remote add origin \
+            https://git.openwrt.org/openwrt/openwrt.git
+    else
+        git clone \
+            https://git.openwrt.org/openwrt/openwrt.git \
+            "$OPENWRT_DIR"
+    fi
 }
 
 check_openwrt_clean() {
