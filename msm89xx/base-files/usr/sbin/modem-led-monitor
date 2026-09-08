@@ -34,6 +34,10 @@ case "$(board_name 2>/dev/null)" in
         *hmu05*) IS_HMU05=1 ;;
         *) IS_HMU05=0 ;;
 esac
+case "$(board_name 2>/dev/null)" in
+        *uf896*) IS_UF896=1 ;;
+        *) IS_UF896=0 ;;
+esac
 
 
 set_red()
@@ -278,6 +282,35 @@ safe_reconnect_modem() {
 }
 
 
+#
+# UF896's modem can silently drop back into DMS operating mode
+# "factory-test" (RF disabled) after boot -- observed happening when
+# something opens /dev/wwan0qmi0's sibling AT port concurrently from two
+# processes. uf896-modem-online (init.d, START=60) only fixes this once,
+# at boot; this periodic check catches a later relapse without requiring
+# a reboot.
+#
+UF896_QMI_DEV="/dev/wwan0qmi0"
+FACTORY_TEST_CHECK_INTERVAL=30
+FACTORY_TEST_CHECK_TIMER=0
+
+check_uf896_factory_test_relapse() {
+        FACTORY_TEST_CHECK_TIMER=$((FACTORY_TEST_CHECK_TIMER + CHECK_INTERVAL))
+        [ "$FACTORY_TEST_CHECK_TIMER" -lt "$FACTORY_TEST_CHECK_INTERVAL" ] && return 0
+        FACTORY_TEST_CHECK_TIMER=0
+
+        [ -e "$UF896_QMI_DEV" ] || return 0
+        local mode="$(qmicli -d "$UF896_QMI_DEV" -p --dms-get-operating-mode 2>/dev/null \
+                | awk -F"'" '/Mode:/ {print $2}')"
+        [ "$mode" = "factory-test" ] || return 0
+
+        logger -t uf896-modem-online "Modem relapsed into factory-test mode; forcing back to online..."
+        qmicli -d "$UF896_QMI_DEV" -p --dms-set-operating-mode=online >/dev/null 2>&1 \
+                && logger -t uf896-modem-online "Modem operating mode restored to online" \
+                || logger -t uf896-modem-online "Failed to restore modem operating mode"
+}
+
+
 run_watchdog_cycle() {
         local iface_status="$(ubus call network.interface.modem status 2>/dev/null)"
         local iface_up="$(echo "$iface_status" | jsonfilter -e '@.up' 2>/dev/null)"
@@ -389,6 +422,10 @@ while true; do
         #
         if [ "$STATE" = "healthy" ] && [ "$IS_HMU05" = "1" ]; then
                 run_watchdog_cycle
+        fi
+
+        if [ "$IS_UF896" = "1" ]; then
+                check_uf896_factory_test_relapse
         fi
 
 
