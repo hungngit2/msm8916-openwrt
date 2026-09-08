@@ -20,14 +20,18 @@ jobs:
 
       - name: Download musl aarch64 cross-compiler
         run: |
-          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/toolchain.tgz
-          tar -xzf /tmp/toolchain.tgz -C /tmp
-          echo "/tmp/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          # musl.cc times out from GitHub-hosted runners (rate-limits/blocks
+          # CI IP ranges); Bootlin's toolchain server is CI-friendly.
+          curl -fsSL --retry 3 --max-time 120 \
+            https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--musl--stable-2026.08-1.tar.xz \
+            -o /tmp/toolchain.tar.xz
+          tar -xJf /tmp/toolchain.tar.xz -C /tmp
+          echo "/tmp/aarch64--musl--stable-2026.08-1/bin" >> "$GITHUB_PATH"
 
       - name: Build all diag tools
         run: |
           cd "Docs/Modem Stability/uf896-diag-tools"
-          GCC=aarch64-linux-musl-gcc
+          GCC=aarch64-buildroot-linux-musl-gcc
           mkdir -p ../../../artifacts/uf896-diag-tools
           for src in *.c; do
             bin="${src%.c}"
