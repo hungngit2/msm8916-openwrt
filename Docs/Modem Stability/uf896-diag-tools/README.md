@@ -13,7 +13,14 @@ $GCC -static -Wall -O2 -I include -o diag_verno_test3 diag_verno_test3.c
 $GCC -static -Wall -O2 -I include -o diag_nv_read     diag_nv_read.c
 $GCC -static -Wall -O2 -I include -o diag_nv_sweep    diag_nv_sweep.c
 $GCC -static -Wall -O2 -I include -o diag_nv_write    diag_nv_write.c
+$GCC -static -Wall -O2 -I include -o diag_efs         diag_efs.c
 ```
+
+CI also cross-compiles all tools in this directory automatically via
+`.github/workflows/build-diag-tools.yml` (a lightweight musl-cross toolchain,
+not the full OpenWrt build) -- trigger it with `workflow_dispatch` or by
+pushing a change under this directory, then grab the built binaries from
+the workflow run's artifacts.
 
 `include/linux/rpmsg.h` is the real upstream kernel UAPI header (copied verbatim, not
 hand-transcribed), needed because this toolchain's sysroot doesn't ship kernel headers.
@@ -43,3 +50,26 @@ On UF896, that's `/dev/rpmsg_ctrl2 DIAG` (confirmed via `/sys/dev/char/252:2` â†
 
 `diag_nv_write`'s `setbyte` mode always prints the exact original 128 bytes before
 writing anything, so a revert is just re-running `setbyte` with the original value.
+
+## EFS file-based NV items (`diag_efs`)
+
+Modern Qualcomm platforms gate a lot of config -- notably IMS/VoLTE -- through a
+*separate* file-based NV subsystem (`DIAG_SUBSYS_CMD_F` / subsystem `Efs`, protocol
+id 19), not the classic numbered items above. Firmware string analysis of this
+board's `modem.bin` dump confirmed paths like `/nv/item_files/ims/IMS_enable` and
+`/nv/item_files/ims/qp_ims_rcs_auto_config` exist in this build. `diag_nv_read`/
+`diag_nv_write` cannot touch these; `diag_efs` speaks the separate EFS2 diag
+protocol instead. Byte layout was derived from the open-source JohnBel/EfsTools C#
+client (not from Qualcomm documentation) -- treat offsets as a starting point to
+verify against the real device, not as certain.
+
+```bash
+# Read-only:
+./diag_efs /dev/rpmsg_ctrl2 DIAG read /nv/item_files/ims/IMS_enable
+
+# Write (reads first, prints original bytes, writes, re-reads to verify):
+./diag_efs /dev/rpmsg_ctrl2 DIAG write /nv/item_files/ims/IMS_enable 01
+```
+
+Same safety discipline as `diag_nv_write`: always read-verify before any write, and
+have the original bytes in hand to revert.
