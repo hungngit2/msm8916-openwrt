@@ -114,24 +114,70 @@ static int open_diag_endpoint(const char *ctrl_path, const char *chan_name) {
 	return fd;
 }
 
+/* A single read() on the rpmsg char device can return more than one
+ * complete HDLC-framed DIAG packet concatenated together (and in
+ * principle a frame split across two reads). This accumulator extracts
+ * exactly one trailer-delimited frame at a time, escape-aware (a
+ * 0x7d-escaped byte pair must not be mistaken for the real trailer). */
+static uint8_t g_acc[4096];
+static size_t g_acc_len = 0;
+
+static int read_one_frame(int fd, uint8_t *out, size_t out_cap) {
+	for (;;) {
+		size_t trailer_idx = (size_t)-1;
+		for (size_t i = 0; i < g_acc_len; i++) {
+			if (g_acc[i] == DIAG_ESC) { i++; continue; }
+			if (g_acc[i] == DIAG_TRAILER) { trailer_idx = i; break; }
+		}
+		if (trailer_idx != (size_t)-1) {
+			size_t frame_len = trailer_idx + 1;
+			int plen = diag_frame_decode(g_acc, frame_len, out, out_cap);
+			memmove(g_acc, g_acc + frame_len, g_acc_len - frame_len);
+			g_acc_len -= frame_len;
+			if (plen < 0) continue;
+			return plen;
+		}
+		struct pollfd pfd = { .fd = fd, .events = POLLIN };
+		if (poll(&pfd, 1, 3000) <= 0) return -1;
+		if (g_acc_len >= sizeof(g_acc)) return -1;
+		ssize_t rn = read(fd, g_acc + g_acc_len, sizeof(g_acc) - g_acc_len);
+		if (rn <= 0) return -1;
+		g_acc_len += (size_t)rn;
+	}
+}
+
 /* Send one DIAG_SUBSYS_CMD_F request, return decoded response payload
- * length, or -1. Response's own 4-byte header (echoing cmd/subsys/subcmd)
- * is left in place at the start of `resp` -- callers index from there,
- * matching the offsets documented per-command below. */
+ * length, or -1. Response's own header (echoing cmd/subsys/subcmd) is
+ * left in place at the start of `resp` -- callers index from there,
+ * matching the offsets documented per-command below.
+ *
+ * Two different response header shapes coexist on this firmware:
+ * EFS_OPEN/EFS_OPENDIR echo the request's 4-byte header verbatim;
+ * EFS_HELLO/EFS_READDIR/EFS_CLOSEDIR prepend one extra byte before that
+ * same 4-byte echo. Both are recognized and normalized to the same
+ * resp+4-relative offsets. */
 static int efs_xfer(int fd, const uint8_t *req, size_t req_len,
 		     uint8_t *resp, size_t resp_cap) {
 	uint8_t framed[1024];
 	size_t fl = diag_frame_encode(req, req_len, framed, sizeof(framed));
 	if (!fl || write(fd, framed, fl) < 0) return -1;
 
-	struct pollfd pfd = { .fd = fd, .events = POLLIN };
-	if (poll(&pfd, 1, 3000) <= 0) return -1;
+	uint8_t raw[1024];
+	int plen = read_one_frame(fd, raw, sizeof(raw));
+	if (plen < 4) return -1;
 
-	uint8_t rx[1024];
-	ssize_t rn = read(fd, rx, sizeof(rx));
-	if (rn < 0) return -1;
-
-	return diag_frame_decode(rx, rn, resp, resp_cap);
+	if (memcmp(raw, req, 4) == 0) {
+		if ((size_t)plen > resp_cap) return -1;
+		memcpy(resp, raw, (size_t)plen);
+		return plen; /* plain 4-byte header */
+	}
+	if (plen >= 5 && memcmp(raw + 1, req, 4) == 0) {
+		if ((size_t)(plen - 1) > resp_cap) return -1;
+		memcpy(resp, raw + 1, (size_t)plen - 1);
+		return plen - 1; /* 1-byte-prefixed header, normalized */
+	}
+	fprintf(stderr, "efs_xfer: gave up waiting for matching response\n");
+	return -1;
 }
 
 static void put_header(uint8_t *buf, uint16_t subsys_cmd) {
