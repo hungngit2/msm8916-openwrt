@@ -357,7 +357,10 @@ int main(int argc, char **argv) {
 
 	uint8_t buf[256];
 	uint32_t buf_len = sizeof(buf);
-	if (efs_read(fd, efs_fd, sizeof(buf), 0, buf, &buf_len, &err) < 0 || err != 0) {
+	/* DEBUG: distinctive size/offset (40, 7) instead of (256, 0) to tell
+	 * apart "these are real response fields" from "the device is just
+	 * echoing our own request back". */
+	if (efs_read(fd, efs_fd, 40, 7, buf, &buf_len, &err) < 0 || err != 0) {
 		fprintf(stderr, "read failed: err=%d\n", err);
 		efs_close(fd, efs_fd, &err);
 		close(fd);
