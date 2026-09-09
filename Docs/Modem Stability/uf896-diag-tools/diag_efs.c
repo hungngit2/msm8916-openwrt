@@ -253,7 +253,12 @@ static int efs_read(int fd, int32_t efs_fd, uint32_t size, uint32_t offset,
 
 	uint8_t resp[2048];
 	int rl = efs_xfer(fd, req, sizeof(req), resp, sizeof(resp));
-	if (rl < 20) { fprintf(stderr, "EFS_READ: bad/short response\n"); return -1; }
+	if (rl < 20) {
+		fprintf(stderr, "EFS_READ: bad/short response (rl=%d):", rl);
+		for (int i = 0; i < rl && i < 64; i++) fprintf(stderr, " %02x", resp[i]);
+		fprintf(stderr, "\n");
+		return -1;
+	}
 	uint32_t bytes_read = get_u32(resp + 12);
 	*out_err = (int32_t)get_u32(resp + 16);
 	if ((size_t)rl < 20 + bytes_read) { fprintf(stderr, "EFS_READ: truncated payload\n"); return -1; }
