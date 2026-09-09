@@ -3,6 +3,15 @@
 See [`../UF896_VOLTE_USSD_RCS_INVESTIGATION_REPORT.md`](../UF896_VOLTE_USSD_RCS_INVESTIGATION_REPORT.md) for the full
 investigation this tooling was built for. This directory just holds the source.
 
+`at_cmd.sh` is a separate, standalone helper -- not a DIAG tool, just a way to send
+one AT command directly to the modem's AT port (`/dev/wwan0at1`) and print whatever
+comes back, since this board's busybox has no `stty`/`timeout`/`microcom`/`socat`.
+Needed repeatedly throughout this investigation for direct `AT+CUSD`/`AT+CMGL`
+testing, bypassing ModemManager entirely. **ModemManager must be fully stopped
+first** (see the comment header in the script) -- opening the AT port from two
+processes at once has caused a real, reproducible modem relapse into DMS operating
+mode `factory-test` (see the investigation report).
+
 ## Build
 
 Cross-compile with this repo's own OpenWrt toolchain (after `./build.sh prepare`):
@@ -57,19 +66,61 @@ Modern Qualcomm platforms gate a lot of config -- notably IMS/VoLTE -- through a
 *separate* file-based NV subsystem (`DIAG_SUBSYS_CMD_F` / subsystem `Efs`, protocol
 id 19), not the classic numbered items above. Firmware string analysis of this
 board's `modem.bin` dump confirmed paths like `/nv/item_files/ims/IMS_enable` and
-`/nv/item_files/ims/qp_ims_rcs_auto_config` exist in this build. `diag_nv_read`/
+~70 other `/nv/item_files/ims/*` entries exist in this build. `diag_nv_read`/
 `diag_nv_write` cannot touch these; `diag_efs` speaks the separate EFS2 diag
-protocol instead. Byte layout was derived from the open-source JohnBel/EfsTools C#
-client (not from Qualcomm documentation) -- treat offsets as a starting point to
-verify against the real device, not as certain.
+protocol instead.
 
 ```bash
-# Read-only:
-./diag_efs /dev/rpmsg_ctrl2 DIAG read /nv/item_files/ims/IMS_enable
-
-# Write (reads first, prints original bytes, writes, re-reads to verify):
-./diag_efs /dev/rpmsg_ctrl2 DIAG write /nv/item_files/ims/IMS_enable 01
+./diag_efs /dev/rpmsg_ctrl2 DIAG read    <efs-path>
+./diag_efs /dev/rpmsg_ctrl2 DIAG write   <efs-path> <hex-bytes>   # existing file only
+./diag_efs /dev/rpmsg_ctrl2 DIAG create  <efs-path> <hex-bytes>   # EFS_O_CREAT|O_RDWR, for a not-yet-provisioned item
+./diag_efs /dev/rpmsg_ctrl2 DIAG unlink  <efs-path>                # revert path for anything created
+./diag_efs /dev/rpmsg_ctrl2 DIAG listdir <efs-path>                # EfsOpenDir/ReadDir/CloseDir
 ```
 
-Same safety discipline as `diag_nv_write`: always read-verify before any write, and
-have the original bytes in hand to revert.
+Same safety discipline as `diag_nv_write`: `write` always reads the file first and
+prints the original bytes before writing anything.
+
+### Protocol notes (verified against a real device, not just derived from docs)
+
+Byte layout was initially derived from the open-source JohnBel/EfsTools C# client
+(not from Qualcomm documentation). Two things in that reference turned out to be
+**incomplete** for this firmware, found by testing against the real device and now
+handled by `diag_efs` automatically -- worth knowing if you're extending this tool
+or porting the protocol elsewhere:
+
+1. **A single `read()` on the rpmsg char device can return more than one complete
+   HDLC-framed DIAG packet concatenated together** (and in principle a frame split
+   across two reads). `diag_frame_decode()` only understands "one frame, already
+   isolated" -- treating each `read()` as exactly one frame silently corrupted
+   multi-frame reads (`EFS_READDIR`/`EFS_CLOSEDIR` responses came back with a stray
+   leading byte and a stray trailing CRC+trailer glued on). Fixed with a persistent
+   byte accumulator (`read_one_frame()` in `diag_efs.c`) that extracts exactly one
+   trailer-delimited frame at a time, escape-aware (a `0x7d`-escaped byte pair must
+   not be mistaken for the real trailer).
+2. **Two different response header shapes coexist on this firmware.**
+   `EFS_OPEN`/`EFS_OPENDIR` responses use a plain 4-byte header (the request's
+   `cmd`/`subsys`/`subcmd` echoed back verbatim). `EFS_HELLO`/`EFS_READDIR`/
+   `EFS_CLOSEDIR` responses are preceded by one extra byte before that same 4-byte
+   echo. `efs_xfer()` recognizes both shapes and normalizes to the same
+   `resp+4`-relative offsets either way -- if you see `efs_xfer: gave up waiting
+   for matching response`, a third variant may exist that isn't handled yet.
+
+### What's been verified end-to-end on the real device
+
+- `EFS_HELLO` handshake succeeds.
+- `/nv/item_files/ims` opens successfully as a directory (confirms the EFS layer
+  itself is live and reachable).
+- `/nv/item_files/ims/IMS_enable` returned `ENOENT` (err=2) on read/open -- it's a
+  **lazily-created item that was never provisioned**, not an existing-but-disabled
+  one. This is the correct reading of the firmware log string
+  `"...isVolteEnabled not able to fetch RCS nv"` -- the *read itself* fails, not
+  just the interpreted value.
+- Used `create` to provision `/nv/item_files/ims/IMS_enable` = `01`. Verified
+  present via a fresh `open`+`read` (fd allocation and a literal `0x01` byte both
+  matched expectations), and confirmed it **survives a full device reboot**
+  (EFS2 persists to flash, as expected).
+- Net result: creating this one item alone did **not** make the `ims` QMI service
+  appear, and did not change USSD/SMS behavior. See the main investigation report
+  for the full before/after comparison -- this rules out `IMS_enable` as the sole
+  gate, but the tooling and methodology are confirmed sound.

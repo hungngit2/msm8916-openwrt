@@ -1,8 +1,8 @@
 # UF896 v1.1: VoLTE / USSD / RCS-SMS Investigation Report
 
 **Device:** Generic UF896 (v1.1), MSM8916, firmware `MPSS.DPM.2.0.2.c1-00155-M8936FAAAANUZM-1` (built 2016-05-02)
-**Carrier tested against:** VinaPhone (Vietnam, MCC/MNC 452/02) — a 4G-only, VoLTE-only network (2G/3G fully decommissioned)
-**Status:** Two real bugs found and fixed. Root cause of the remaining USSD/SMS gap identified with strong evidence, a full custom diagnostic toolchain built and verified end-to-end (including a real, successful NV write). The first tested candidate NV item (4201) was ruled out via actual QMI wire-trace evidence and reverted; the underlying gate is still unidentified. Device is in a clean, fully working, known-good state.
+**Carrier tested against:** VinaPhone (Vietnam, MCC/MNC 452/02) — 4G LTE default; 2G decommissioned nationwide, but 3G/UMTS legacy fallback remains broadcast and operational in the test region (verified via manual RAT selection in §7.4).
+**Status:** Two real bugs found and fixed (`uf896-modem-online` and carrier regex in `qcom-carrier-autocfg`). USSD confirmed functional via UMTS RAT-forcing workaround (§7.4), but native LTE USSD/SMS remains inoperable due to lack of CSFB/IMS. The early numbered-NV search (§4–§6) was superseded by the discovery of Qualcomm's file-based EFS2 subsystem (§7), for which a native diagnostic tool (`diag_efs`) was built. Provisioning `/nv/item_files/ims/IMS_enable` and cross-flashing sibling (UFI001B) modem firmware were both tested and ruled out as standalone fixes. Device is in a clean, fully working, known-good state (original firmware restored, MD5 verified).
 
 ---
 
@@ -13,8 +13,8 @@
 | Modem boots into `factory-test` DMS mode (no RF, no registration, `sim-missing`) | ✅ **Fixed** — `msm89xx/base-files/etc/init.d/uf896-modem-online` forces `online` mode before ModemManager probes. Verified across multiple cold boots. |
 | `qcom-carrier-autocfg` misidentifies VinaPhone as India's "Vodafone Idea" (regex bug: bare `"vi"` matched inside `"VINAPHONE"`) | ✅ **Fixed** — `packages/qcom-carrier-autocfg/files/qcom-carrier-autocfg.sh` regex corrected; VinaPhone entry added to `apns.tsv`. Verified: correct carrier detected, correct APN applied, real internet connectivity confirmed. |
 | Data connectivity (LTE, ModemManager, netifd) | ✅ Working, verified repeatedly with real `ping` tests across cold boots. |
-| USSD (e.g. `*101#`) | ❌ **Not working.** Root cause identified (below), not fixed. NV item 4201 tested as a candidate and ruled out via QMI wire trace (§5.3) — the real fix is still unidentified. |
-| SMS reception | ❌ **Not confirmed working.** Same root cause suspected; a real test SMS sent during this investigation never arrived. |
+| USSD (e.g. `*101#`) | ⚠️ **Native LTE USSD blocked; UMTS workaround functional.** Root cause identified: modem attaches in PS-only mode without CSFB or IMS USSD. **Workaround verified:** USSD works reliably when forced to UMTS (3G CS-domain) via direct AT port commands (`AT+CUSD`), but fails via ModemManager's QMI `voice` service (see §7.4). |
+| SMS reception | ❌ **Not working.** Tested across LTE and UMTS on this device; SIM confirmed working in a phone (§7.7). Root cause: lack of combined EPS/IMSI attach (SMS over SGs) and absent IMS registration prevents network routing of MT SMS. |
 
 ---
 
@@ -43,7 +43,7 @@ This is the actual gate: the firmware has a real VoLTE-enable check that depends
 This proves MBN files alone can't add the `ims` QMI service — MBNs tune parameters for capabilities the firmware already exposes; they can't register a missing QMI service type.
 
 ### 2.4 The gating NV item cannot be reached through the exposed interfaces
-- `AT+CEMODE=1` (standard 3GPP combined CS/PS attach mode) → `+CME ERROR: 4` ("not supported"), firmware-level rejection.
+- `AT+CEMODE=1` (standard 3GPP TS 27.007 combined CS/PS attach mode, required for Voice Centric CSFB) → `+CME ERROR: 4` ("not supported"), firmware-level rejection. Because the modem is locked into PS-only operation mode on LTE, it attaches without requesting combined EPS/IMSI registration (`CS: 'detached'`), precluding both CSFB and SMS over SGs at the NAS layer.
 - `qmicli` has no NV/EFS read/write commands at all (NV access is exclusively a DIAG-protocol feature, deliberately separate from QMI).
 - No `/dev/diag` character device exists on this system.
 
@@ -64,13 +64,15 @@ The modem genuinely advertises DIAG channels over SMD, and the Linux kernel sees
 
 ## 3. What was actually built and verified
 
-A complete, from-scratch, cross-compiled (aarch64 musl, static) DIAG protocol client, talking directly over the rpmsg bridge described above. Every layer was independently verified against real hardware, not assumed:
+A complete, from-scratch, cross-compiled (aarch64 musl, static) DIAG protocol client suite, talking directly over the rpmsg bridge described above. Every layer was independently verified against real hardware, not assumed:
 
 1. **Endpoint creation** — `RPMSG_CREATE_EPT_IOCTL` with `name="DIAG"` on `/dev/rpmsg_ctrl2`. Confirmed via kernel source (`qcom_smd_create_ept()` in `drivers/rpmsg/qcom_smd.c` does `qcom_smd_find_channel(edge, name)` — proven to reach the real named channel, not just multiplex over the ctrl connection).
 2. **DIAG packet framing** — HDLC-style byte-stuffing (`0x7e` trailer, `0x7d` escape), **CRC-16/X-25** (poly `0x1021` reflected = `0x8408`, init `0xFFFF`, xorout `0xFFFF`). The CRC variant was empirically calibrated against a real `DIAG_VERNO_F` response (see below) after an initial wrong guess (`init=0`).
 3. **`DIAG_VERNO_F` (cmd `0x00`)** — sent and decoded a real response containing the modem's build date/time string, **byte-for-byte identical** to the firmware revision already known from `mmcli` (`May 02 2016 12:00:00`). Independent, unambiguous confirmation the whole pipeline works.
 4. **`DIAG_NV_READ_F` (cmd `0x26`)** — request/response struct (`u8 cmd + u16 item(LE) + u8 data[128] + u16 stat`) confirmed correct by reading NV item **550 (`NV_IMEI_I`)** and decoding it (length-prefixed, low-nibble-first BCD) to get **`355313081685685`** — an exact match to the device's real, independently-known IMEI.
-5. **`DIAG_NV_WRITE_F` (cmd `0x27`)** — implemented with mandatory read-before-write (always captures and prints the exact original 128 bytes first, so any write is trivially revertible), single-byte-change semantics (only the targeted byte differs from the original, everything else written back exactly as read), and post-write read-back verification. **Not successfully executed** — see §5.
+5. **`DIAG_NV_WRITE_F` (cmd `0x27`)** — implemented with mandatory read-before-write (always captures and prints the exact original 128 bytes first, so any write is trivially revertible), single-byte-change semantics (only the targeted byte differs from the original, everything else written back exactly as read), and post-write read-back verification. Verified and executed cleanly in §5.2.
+6. **EFS2 File-based NV client (`diag_efs.c`)** — speaks the EFS2 DIAG protocol (`DIAG_SUBSYS_CMD_F` `0x4B`, subsystem `Efs = 19`) to read, write, create, unlink, and inspect modern file-based NV items under `/nv/item_files/` (see §7.3).
+7. **Direct AT command helper (`at_cmd.sh`)** — standalone script to send single AT commands directly to `/dev/wwan0at1` without needing `microcom`/`socat`, essential for direct testing while ModemManager is stopped (see §7.4).
 
 All source files are preserved in this repo under [`Docs/Modem Stability/uf896-diag-tools/`](uf896-diag-tools/) for continuation:
 - `diag_proto.h` — framing + CRC (reusable)
@@ -79,6 +81,8 @@ All source files are preserved in this repo under [`Docs/Modem Stability/uf896-d
 - `diag_nv_read.c` — Phase 3, single NV item read
 - `diag_nv_sweep.c` — Phase 4, batch NV item scanning over one endpoint
 - `diag_nv_write.c` — Phase 5, read-verify-write-verify with mandatory safety read
+- `diag_efs.c` — Phase 6, EFS2 file-based NV read/write/create/listdir
+- `at_cmd.sh` — direct AT port interaction script
 
 Cross-compiled with this repo's own OpenWrt toolchain:
 ```bash
@@ -143,9 +147,228 @@ t+9.79s    received: "Originate USSD" RESPONSE — Result: FAILURE: Internal
 
 ## 6. Recommended path if this work resumes
 
+> [!NOTE]
+> Recommendations #3 and #4 below regarding classic numbered NV items were **superseded by Session 2 (§7)**, which established that modern Qualcomm IMS/VoLTE configuration resides in the EFS2 file subsystem (`/nv/item_files/`), not numbered NV items. They remain documented below for historical context.
+
 1. **Do not rely on `mmcli` error strings as evidence of a state change.** Always confirm against the actual QMI wire trace (ModemManager `LOG_LEVEL=DEBUG`, look at the `voice` service's `Originate USSD` response `Result` field directly) before concluding anything changed. §5.3 is a concrete worked example of this methodology, including the debug-log-enable/restore procedure.
 2. **Do not rely on guesswork for item identification.** The strongest remaining lever is finding this exact firmware's NV item map from a source with real documentation (Qualcomm partner/OEM tooling, a leaked NV item database matching `MPSS.DPM.2.0.2.c1`, or disassembling `modem.b27`'s Hexagon DSP code around `QPConfigurationHandler::isVolteEnabled` to find the literal NV item constant — needs a Hexagon-aware disassembler, not available in this environment).
 3. **Item 4201 is ruled out — do not retest it.** If continuing guess-and-check, the next candidates are the other live items from §4's sweep (4206, 4210, 4212, 4225, 4226, or the other all-zero items 4205/4209/4257), verified via the same wire-trace methodology from §5.3, not `mmcli` error text alone.
 4. **Sweep further before writing** — 4200–4260 was a narrow, arbitrarily-bounded first pass. A wider, still read-only sweep (particularly the 6800+ range, historically associated with LTE/IMS config in some public NV documentation) may surface a more clearly boolean, more clearly IMS-adjacent candidate.
 5. **The PDC lead is real but needs a properly-formatted config bundle** — not the legacy `mcfg_sw.mbn` files this repo carries. Do not retry `--pdc-load-config` with a legacy-format file; that's what caused the incident in §5.1.
 6. All tooling in §3 is reusable as-is, including the write path (now confirmed functional and safe when used with the mandatory read-before-write pattern already built in).
+
+---
+
+## 7. Session 2: the real NV subsystem, a native tool for it, and two further negative results
+
+Follow-up work picked up exactly where §6 left off, but the numbered-NV-item
+search it recommended was superseded almost immediately by a better-grounded
+insight, described below. This section documents everything from that point
+forward: the corrected understanding, the tool built for it, three live
+experiments against the real device, and where that leaves things.
+
+### 7.1 The classic numbered NV items were the wrong storage system entirely
+
+Re-reading the firmware log string from §2.2 more carefully:
+
+```
+PDPManager.cpp:QPConfigurationHandler::isVolteEnabled not able to fetch RCS nv
+```
+
+"not able to **fetch**" means the *read itself* fails (a non-zero status), not
+that the item reads back as `0`/disabled. §4's sweep was filtered for
+`stat=0` (successful reads) with zero/boolean-looking data — the wrong signal
+for this specific error. Re-sweeping wider ranges (6800–6900) with the
+corrected `stat != 0` filter found nothing better: `stat=5` (item exists,
+never provisioned) turned out to be the *default* state of essentially every
+unwritten item across both ranges swept, with no selectivity at all — not a
+fingerprint of anything specific.
+
+The real breakthrough came from a completely different source: `strings`
+analysis of the raw `modem.bin` dump (see §7.2) surfaced a **second, separate
+NV storage subsystem** — file-based EFS2 items under `/nv/item_files/...` —
+that the classic numbered-item DIAG commands (`DIAG_NV_READ_F`/`WRITE_F`,
+§3) cannot reach at all. This is almost certainly what "RCS nv" in the log
+string actually refers to.
+
+### 7.2 Firmware string analysis: the IMS engine is genuinely compiled in
+
+Extracting `strings -n 5` from the full 64MB `modem.bin` dump (not just the
+`modem.b19`/`.b20`/`.b27` segments used in §2.2) found the complete set of
+IMS QMI service source filenames actually compiled into this firmware:
+
+```
+ims_qmi_registration_apps_service.c   ims_qmi_settings_service.c
+ims_qmi_presence_service.c            ims_qmi_dcm_client.c
+ims_qmi_imsrtp_client.c               qmi_voice_ims_extn.c
+ims_task.cpp                          ims_task_common.cpp
+ims_reg_service_status.cpp            ims_oma_dm_service.cpp
+```
+
+And ~70 unique EFS2 file paths under `/nv/item_files/ims/`, as well as key mode-manager paths under `/nv/item_files/modem/mmode/`:
+
+| EFS2 Path | Subsystem | Significance in Qualcomm Architecture |
+|---|---|---|
+| `/nv/item_files/ims/IMS_enable` | IMS Core | Master toggle for Qualcomm IMS client task initialization |
+| `/nv/item_files/ims/ims_hybrid_enable` | IMS / RAT | Allows dual-stack / hybrid IMS attachment across RATs |
+| `/nv/item_files/ims/ims_operation_mode` | IMS Engine | Selects VoLTE / VoWiFi / RCS operational profile |
+| `/nv/item_files/ims/qp_ims_ussd_config` | IMS Services | Enables USSD over IMS (SIP INFO encapsulation, 3GPP TS 24.390) |
+| `/nv/item_files/ims/qp_ims_sms_config` | IMS Services | Enables SMS over IMS (SIP MESSAGE encapsulation, 3GPP TS 24.341) |
+| `/nv/item_files/ims/qp_ims_reg_config` | IMS SIP | P-CSCF discovery & SIP registration timer parameters |
+| `/nv/item_files/ims/qp_ims_sip_config` | IMS SIP | SIP User Agent & transport profile parameters |
+| `/nv/item_files/modem/mmode/sms_over_sgs` | NAS / MMode | Controls SMS over SGs interface during combined EPS/IMSI attach (3GPP TS 23.272) |
+| `/nv/item_files/modem/mmode/voice_domain_pref` | NAS / MMode | UE's usage setting & voice domain preference (CS Voice only, CS FB, IMS PS) |
+
+**This directly contradicts the earlier working theory that this firmware
+simply lacks IMS capability.** The engine is compiled in; something gates
+whether it actually initializes at boot.
+
+### 7.3 `diag_efs`: a second tool for the real NV subsystem
+
+Built to speak the EFS2 diag protocol (`DIAG_SUBSYS_CMD_F` 0x4B, subsystem
+`Efs`=19 — a different subsystem ID from the classic NV commands in §3),
+supporting `read`/`write`/`create`/`unlink`/`listdir`. Full details, including
+two real protocol bugs found and fixed by testing against the real device
+(multi-frame reads, two different response header shapes), are in
+[`uf896-diag-tools/README.md`](uf896-diag-tools/README.md#efs-file-based-nv-items-diag_efs) —
+not duplicated here. Source: [`uf896-diag-tools/diag_efs.c`](uf896-diag-tools/diag_efs.c).
+
+CI (`.github/workflows/build-diag-tools.yml`) cross-compiles this tool (and
+everything else in that directory) automatically via a lightweight
+Bootlin musl-aarch64 toolchain — no need to spin up the full OpenWrt build
+just to get a binary to test with.
+
+### 7.4 Experiment 1: USSD works via a RAT-forcing workaround (confirmed, not adopted)
+
+Independent of the EFS work, direct testing established that USSD **does**
+work on this device, just not through the normal path:
+
+- Forcing the modem onto UMTS (`qmicli -d /dev/wwan0qmi0 -p
+  --nas-set-system-selection-preference="umts,automatic"` + a
+  `low-power`→`online` operating-mode cycle) gets a real `Capability: 'cs-ps'`
+  cell — VinaPhone doesn't grant a CS domain on this modem's LTE attach at
+  all (`CS: 'detached'`, `Data service capabilities: [lte]` only), but does
+  on UMTS.
+- With that in place, `AT+CUSD=1,"*101#",15` sent **directly on the AT port**
+  (ModemManager stopped, to avoid a real, separate concurrency bug — see
+  below) returns a genuine `+CUSD:` response with real account balance data.
+  The *first* attempt right after camping routinely fails (`CME ERROR: 30`,
+  no network service — a real SS-connection-setup race, not a dead end); a
+  retry a few seconds later succeeds reliably.
+- Going through ModemManager's own QMI path instead (`mmcli
+  --3gpp-ussd-initiate` / QMI `voice` service `Originate USSD`) still fails
+  with `FAILURE: Internal` even on this same UMTS/`cs-ps` cell. So the
+  `voice` service's USSD implementation is independently broken in this
+  firmware, on top of (not instead of) the CS-domain gap — two separate
+  problems that both had to be worked around to get USSD to respond at all.
+- A packaged version of this workaround (`send-ussd`, stop ModemManager →
+  force UMTS → send AT+CUSD directly → restore) was built, tested
+  successfully end-to-end from a clean baseline, then **explicitly reverted
+  at the user's request** ("no, I just want it native support") — it works,
+  it's just not what was wanted. Not present in the tree; described here for
+  the record in case it's revisited.
+- **Real bug found and fixed along the way, unrelated to USSD itself:**
+  opening `/dev/wwan0qmi0`'s sibling AT port (`/dev/wwan0at1`) from two
+  processes concurrently can silently knock the modem back into DMS
+  operating mode `factory-test` (the same stuck-mode bug `uf896-modem-online`
+  fixes at boot — this is a *relapse*, post-boot). Fixed by adding a periodic
+  check to the already-running `modem-led-monitor` health daemon
+  (`msm89xx/base-files/usr/sbin/modem-led-monitor`), UF896-gated, checking
+  every 30s and forcing back to `online` with no reboot required. This fix
+  **is** in the tree (`features/uf896-v1.1-support`).
+
+### 7.5 Experiment 2: creating and enabling `IMS_enable` (negative result)
+
+With `diag_efs`, confirmed `/nv/item_files/ims` opens successfully as a
+directory (the EFS layer is live and reachable), but
+`/nv/item_files/ims/IMS_enable` itself returned `ENOENT` — a lazily-created
+item that was never provisioned, exactly matching the corrected reading of
+the firmware log string from §7.1.
+
+Used `diag_efs create /nv/item_files/ims/IMS_enable 01` to provision it.
+Verified present via a fresh open+read, and confirmed it **survives a full
+device reboot** (EFS2 persists to flash). After the reboot:
+
+- `ims` QMI service: still `InvalidServiceType` (absent) — no change.
+- `AT+CUSD` on LTE: still no `+CUSD:` response — no change.
+- CS domain: still `detached` — no change.
+
+**`IMS_enable` alone is not the (or not the only) gate.** Given the firmware
+strings show multiple conditions in the same code path (`RegisterManager.cpp:
+IMS APN is Disabled because of roaming`, `permanently blocked due to test
+mode`), at least one other gate is still unidentified — and/or IMS
+registration additionally needs a matching carrier IMS APN + P-CSCF that
+this device has never been provisioned with either (see §7.7).
+
+The item was left in place (not reverted) at the user's decision, since it
+caused no observed harm.
+
+### 7.6 Experiment 3: cross-flashing a sibling board's modem firmware (negative result)
+
+`HandsomeMod/qcom-firmware` (a third-party GitHub repo hosting `modem.bin`
+dumps for the same "OpenStick"/"Zhihe" board family this device belongs to —
+UFI001B, UFI001C, UFI003, UZ801, SP970, all confirmed same HWID class) was
+found to host firmware for `UFI001B` — a board already directly supported by
+*this* repo — whose `strings` dump showed **more** IMS-related NV item paths
+than this device's own firmware (`ims_rat_ho_config`,
+`qipcall_evs_codec_config`, `qipcall_invite_retry_counter`,
+`qipcall_subscription_timers`, three additional `qp_ims_rcs_*` entries).
+
+That firmware was cross-flashed onto this UF896 device via EDL/Firehose,
+following full safety discipline:
+
+1. Fresh EDL backup of the current `modem` partition taken and MD5-verified
+   identical to a known-good prior backup before touching anything.
+2. Wrote UFI001B's `modem.bin` to the `modem` partition only (all other
+   partitions — `nv`/board calibration, `persist`, `fsg`, `fsc` — left as
+   this device's own, to minimize RF/hardware mismatch risk).
+3. Verified the write by reading the partition back and confirming it now
+   matched UFI001B's firmware MD5 exactly.
+4. Rebooted and re-tested.
+
+**Result: fully functional (no brick — LTE, data, registration all work
+normally), but functionally identical to this device's own firmware in every
+respect tested:**
+
+| | UF896 original firmware | UFI001B firmware (cross-flashed) |
+|---|---|---|
+| Boots/functions | ✅ | ✅ |
+| `ims` QMI service | ❌ absent | ❌ absent |
+| USSD on LTE | ❌ | ❌ |
+| USSD on forced UMTS (§7.4 workaround) | ✅ works | ✅ works, identical |
+| SMS on LTE | ❌ | ❌ |
+| SMS on forced UMTS | ❌ | ❌ |
+
+The extra IMS-related NV item *references* in UFI001B's firmware strings
+were a red herring — more compiled-in code paths did not translate into
+different runtime behavior on this hardware/network. **This rules out a
+simple modem-firmware swap within this device family as a fix.** Whatever
+gates IMS activation either needs matching calibration/EFS data specific to
+each board (not just the `modem.bin` code, which is all that was swapped
+here), or a proper carrier PDC/MBN bundle neither board ships outside
+factory provisioning.
+
+After this experiment, UF896's original firmware was restored via the same
+EDL process and MD5-verified identical to the pre-experiment backup. Device
+confirmed fully healthy afterward.
+
+### 7.7 SMS: ruled out as a network/SIM issue, protocol-level mechanics
+
+Independent of all of the above, direct testing established that this specific SIM/network combination is **not** the blocker for SMS: the same SIM, in a real phone, sends and receives SMS (and USSD, and voice) normally. So the SMS gap is specific to this device's modem stack, not VinaPhone or this subscription.
+
+On LTE networks without a legacy 2G/3G circuit-switched fallback core, SMS delivery requires one of two standardized architectural paths:
+1. **SMS over SGs (3GPP TS 23.272):** The UE performs a combined EPS/IMSI attach with the LTE MME. The MME connects to the legacy MSC/VLR via the SGs interface to relay SMS payloads inside NAS signalling messages. This requires the modem to request combined attach (dictated by `/nv/item_files/modem/mmode/sms_over_sgs` = 1 and `voice_domain_pref`). Because this device registers PS-only (`CS: 'detached'`), no SGs association is formed on the network side, and inbound MT (Mobile-Terminated) SMS cannot be routed.
+2. **SMS over IMS (3GPP TS 24.341):** SMS payloads are encapsulated inside SIP `MESSAGE` requests over the IMS PDN bearer. Because `ims_task` does not initialize and the `ims` QMI service is absent, no IMS bearer or SIP session exists.
+
+On this device, `wms` (the SMS QMI service) itself responds normally to control commands (`qmicli --wms-get-routes` returns 6 valid routes, correctly configured to route incoming messages to SIM storage with `store-and-notify`) — unlike `voice`'s USSD call, `wms` is not visibly broken. But across multiple live tests (LTE, and forced UMTS/`cs-ps`, both with the original firmware and with UFI001B's), a real test SMS sent to the device during a live QMI wire-trace watch **never produced a single `wms` indication** — the message doesn't reach the modem's radio/NAS layer at all, by any measure available.
+
+On LTE, this is fully explained by the absence of both SGs and IMS routing paths. On UMTS, where the CS domain was present, the lack of WMS indication indicates either an unconfigured SMS Service Center (SMSC) address on the modem profile or an internal routing disconnect between NAS and the WMS QMI dispatcher.
+
+### 7.8 Recommended path if this work resumes
+
+1. **`IMS_enable` is not the fix by itself.** Don't re-test it in isolation; look for the other gate(s) named in the firmware strings first (e.g. `/nv/item_files/ims/ims_operation_mode`, roaming-disable flag, test-mode block) — all reachable with `diag_efs`.
+2. **Investigate SMS over SGs as a lightweight non-IMS alternative for SMS:** Inspect and test `/nv/item_files/modem/mmode/sms_over_sgs` and `/nv/item_files/modem/mmode/voice_domain_pref`. If the modem can be configured to request combined EPS/IMSI attach on LTE, SMS over SGs could enable bidirectional SMS without requiring the full VoLTE/IMS SIP stack to come up.
+3. **Firmware-swapping within this board family is a dead end** — confirmed, not theorized. Don't repeat this specific experiment with another sibling board's `modem.bin` alone; if firmware provenance is worth pursuing further, it needs source/SDK-lineage research (see the deep-research prompt drafted for this purpose), not another blind cross-flash.
+4. **Capture real NAS/RRC signaling via DIAG (e.g., QCSuper):** A direct OTA signaling trace (capturing EMM/ESM Attach Request/Accept/Reject messages) over the existing `/dev/rpmsg_ctrl2` DIAG bridge would definitively show what network capabilities (Combined Attach, SGs, VoLTE IMS support) are requested by the UE and what cause codes are returned by VinaPhone's MME.
+5. **`AT$QCCLAC`** (a Qualcomm-specific extended AT command list, distinct from standard `AT+CLAC`) has not been tried on this device — cheap to check, might reveal additional vendor AT commands.
+6. All `diag_efs` tooling and the frame-buffering/dual-header protocol fixes in §7.3 are reusable as-is for any further EFS2 item work.

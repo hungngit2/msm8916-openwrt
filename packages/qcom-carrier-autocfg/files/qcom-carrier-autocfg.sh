@@ -263,6 +263,34 @@ provision_carrier_bands() {
 	fi
 }
 
+provision_smsc() {
+	local op_code="$1"
+	local smsc=""
+
+	case "$op_code" in
+		# Vietnam (MCC 452)
+		45202) smsc="+8491020005" ;;     # VinaPhone
+		45204) smsc="+84980200030" ;;    # Viettel
+		45201) smsc="+84900000022" ;;    # MobiFone
+		45205) smsc="+84920210015" ;;    # Vietnamobile
+		# India (MCC 404 / 405)
+		4058*) smsc="+917000000000" ;;   # Reliance Jio
+		# Nepal (MCC 429)
+		42901) smsc="+9779851000000" ;;  # NTC
+		42902) smsc="+9779800000001" ;;  # Ncell
+	esac
+
+	[ -n "$smsc" ] || return 0
+
+	for at_port in /dev/wwan0at1 /dev/wwan0at0; do
+		if [ -c "$at_port" ]; then
+			log "Checking and setting SMS Center (SMSC) address to '$smsc' for operator $op_code..."
+			timeout 2 sh -c "printf 'AT+CSCA=\"$smsc\",145\r\n' > $at_port" 2>/dev/null || true
+			break
+		fi
+	done
+}
+
 reset_baseband_cache() {
 	local m_path="$1"
 	log "Flushing baseband radio cache and re-reading SIM..."
@@ -493,6 +521,7 @@ while true; do
 					check_and_flush_radio_cache "$MODEM_PATH" "$CARRIER_APN" "$CARRIER_IPTYPE" "$IMSI" "$OP_CODE" "$CARRIER_NAME" "$is_jio"
 					provision_network "$CARRIER_APN" "$CARRIER_IPTYPE" "$CARRIER_MODE" "$is_jio"
 					provision_carrier_bands "$MODEM_PATH" "$CARRIER_MODE" "$CARRIER_NAME" "$OP_CODE" "$OP_NAME" "$is_jio"
+					provision_smsc "$OP_CODE"
 
 					LAST_OPERATOR_CODE="$OP_CODE"
 					LAST_IMSI="$IMSI"
@@ -535,6 +564,7 @@ while true; do
 						check_and_flush_radio_cache "$MODEM_PATH" "$CARRIER_APN" "$CARRIER_IPTYPE" "$IMSI" "$OP_CODE" "$CARRIER_NAME" "$is_jio"
 						provision_network "$CARRIER_APN" "$CARRIER_IPTYPE" "$CARRIER_MODE" "$is_jio"
 						provision_carrier_bands "$MODEM_PATH" "$CARRIER_MODE" "$CARRIER_NAME" "$OP_CODE" "$OP_NAME" "$is_jio"
+						provision_smsc "$OP_CODE"
 						connect_bearer "$CARRIER_APN" "$CARRIER_IPTYPE" "$IMSI"
 						log "Radio cache refreshed and connection restored."
 						log "========================================================"
