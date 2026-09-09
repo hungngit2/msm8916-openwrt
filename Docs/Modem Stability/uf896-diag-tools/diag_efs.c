@@ -138,7 +138,7 @@ static int read_one_frame(int fd, uint8_t *out, size_t out_cap) {
 			return plen;
 		}
 		struct pollfd pfd = { .fd = fd, .events = POLLIN };
-		if (poll(&pfd, 1, 3000) <= 0) return -1;
+		if (poll(&pfd, 1, 12000) <= 0) return -1;
 		if (g_acc_len >= sizeof(g_acc)) return -1;
 		ssize_t rn = read(fd, g_acc + g_acc_len, sizeof(g_acc) - g_acc_len);
 		if (rn <= 0) return -1;
