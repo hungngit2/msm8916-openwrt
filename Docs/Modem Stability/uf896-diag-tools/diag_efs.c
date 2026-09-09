@@ -254,8 +254,14 @@ static int efs_read(int fd, int32_t efs_fd, uint32_t size, uint32_t offset,
 	uint8_t resp[2048];
 	int rl = efs_xfer(fd, req, sizeof(req), resp, sizeof(resp));
 	if (rl < 20) {
-		fprintf(stderr, "EFS_READ: bad/short response (rl=%d):", rl);
+		fprintf(stderr, "EFS_READ: short first frame (rl=%d):", rl);
 		for (int i = 0; i < rl && i < 64; i++) fprintf(stderr, " %02x", resp[i]);
+		fprintf(stderr, "\n");
+		/* Maybe the data comes as a second, separate frame. */
+		uint8_t raw2[2048];
+		int rl2 = read_one_frame(fd, raw2, sizeof(raw2));
+		fprintf(stderr, "EFS_READ: follow-up frame (rl2=%d):", rl2);
+		for (int i = 0; i < rl2 && i < 64; i++) fprintf(stderr, " %02x", raw2[i]);
 		fprintf(stderr, "\n");
 		return -1;
 	}
