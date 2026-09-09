@@ -38,6 +38,7 @@
 #define EFS_CLOSE 3
 #define EFS_READ  4
 #define EFS_WRITE 5
+#define EFS_FSTAT 17
 
 /* EfsFileFlag (octal in the original C#, kept as-is) */
 #define EFS_O_RDONLY 000000
@@ -243,6 +244,28 @@ static int efs_open(int fd, const char *path, uint32_t flags, uint32_t perm,
 	return efs_fd; /* caller checks efs_fd < 0 */
 }
 
+/* EfsFstat: header(4) + fd(4) request; header(4) + err(4) + mode(4) +
+ * size(4) + link_count(4) + atime(4) + mtime(4) + ctime(4) = 32-byte
+ * min response, per the JohnBel/EfsTools reference. Read-only, no risk
+ * to file content -- used here to sanity-check EFS_READ's odd behavior. */
+static int efs_fstat(int fd, int32_t efs_fd, int32_t *out_err,
+		      uint32_t *out_mode, uint32_t *out_size) {
+	uint8_t req[8];
+	put_header(req, EFS_FSTAT);
+	put_u32(req + 4, (uint32_t)efs_fd);
+
+	uint8_t resp[128];
+	int rl = efs_xfer(fd, req, sizeof(req), resp, sizeof(resp));
+	fprintf(stderr, "EFS_FSTAT raw (rl=%d):", rl);
+	for (int i = 0; i < rl && i < 64; i++) fprintf(stderr, " %02x", resp[i]);
+	fprintf(stderr, "\n");
+	if (rl < 32) { fprintf(stderr, "EFS_FSTAT: short response\n"); return -1; }
+	*out_err = (int32_t)get_u32(resp + 4);
+	*out_mode = get_u32(resp + 8);
+	*out_size = get_u32(resp + 12);
+	return 0;
+}
+
 static int efs_read(int fd, int32_t efs_fd, uint32_t size, uint32_t offset,
 		     uint8_t *out, uint32_t *out_len, int32_t *out_err) {
 	uint8_t req[16];
@@ -354,6 +377,12 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	printf("open(%s) -> fd=%d\n", path, efs_fd);
+
+	{
+		int32_t stat_err; uint32_t mode, size;
+		if (efs_fstat(fd, efs_fd, &stat_err, &mode, &size) == 0)
+			printf("FSTAT: err=%d mode=0%o size=%u\n", stat_err, mode, size);
+	}
 
 	uint8_t buf[256];
 	uint32_t buf_len = sizeof(buf);
