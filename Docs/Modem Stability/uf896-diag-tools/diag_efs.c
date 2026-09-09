@@ -257,12 +257,17 @@ static int efs_read(int fd, int32_t efs_fd, uint32_t size, uint32_t offset,
 		fprintf(stderr, "EFS_READ: short first frame (rl=%d):", rl);
 		for (int i = 0; i < rl && i < 64; i++) fprintf(stderr, " %02x", resp[i]);
 		fprintf(stderr, "\n");
-		/* Maybe the data comes as a second, separate frame. */
-		uint8_t raw2[2048];
-		int rl2 = read_one_frame(fd, raw2, sizeof(raw2));
-		fprintf(stderr, "EFS_READ: follow-up frame (rl2=%d):", rl2);
-		for (int i = 0; i < rl2 && i < 64; i++) fprintf(stderr, " %02x", raw2[i]);
-		fprintf(stderr, "\n");
+		/* Sniff every frame arriving over the next ~5s, unfiltered by
+		 * header, in case the real completion is a differently-tagged
+		 * packet (async log/event) rather than a direct reply. */
+		for (int n = 0; n < 10; n++) {
+			uint8_t raw2[2048];
+			int rl2 = read_one_frame(fd, raw2, sizeof(raw2));
+			fprintf(stderr, "EFS_READ: sniff frame #%d (rl2=%d):", n, rl2);
+			if (rl2 < 0) { fprintf(stderr, " (timeout, stop)\n"); break; }
+			for (int i = 0; i < rl2 && i < 96; i++) fprintf(stderr, " %02x", raw2[i]);
+			fprintf(stderr, "\n");
+		}
 		return -1;
 	}
 	uint32_t bytes_read = get_u32(resp + 12);
