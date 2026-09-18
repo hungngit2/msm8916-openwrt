@@ -88,7 +88,7 @@ define Device/generic-uf896
 	FILESYSTEMS := squashfs
 	DEVICE_PACKAGES := wpad-basic-wolfssl rmtfs uci-usb-gadget \
 		block-mount f2fs-tools tar \
-		msm-firmware-dumper reboot-edl qcom-carrier-autocfg
+		msm-firmware-dumper reboot-edl qcom-carrier-autocfg diag-tools
 endef
 TARGET_DEVICES += generic-uf896
 
