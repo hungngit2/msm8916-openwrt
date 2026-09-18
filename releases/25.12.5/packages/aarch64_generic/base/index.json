@@ -6,6 +6,7 @@
     "blkid": "2.41.5-r1",
     "busybox": "1.37.0-r6",
     "ca-bundle": "20260601-r1",
+    "diag-tools": "1",
     "dnsmasq": "2.93-r1",
     "e2fsprogs": "1.47.3-r1",
     "f2fs-tools": "1.16.0-r4",
