@@ -10,7 +10,7 @@ PKG_MAINTAINER:=Hung Nguyen <hung.nguyen@skedulo.com>
 
 include $(INCLUDE_DIR)/package.mk
 
-DIAG_BINS:=diag_verno_test3 diag_nv_read diag_nv_sweep diag_nv_write diag_efs rpmsg_diag_open
+DIAG_BINS:=diag_verno_test3 diag_nv_read diag_nv_sweep diag_nv_write diag_efs rpmsg_diag_open modem_at_bridge
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
@@ -53,6 +53,9 @@ define Package/diag-tools/install
 	)
 	$(INSTALL_BIN) ./files/at_cmd.sh $(1)/usr/bin/at_cmd.sh
 	$(INSTALL_BIN) ./files/change_imei.sh $(1)/usr/bin/change_imei.sh
+	$(INSTALL_BIN) ./files/lte-mode.sh $(1)/usr/bin/lte-mode
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/modem-at-bridge.init $(1)/etc/init.d/modem-at-bridge
 endef
 
 $(eval $(call BuildPackage,diag-tools))

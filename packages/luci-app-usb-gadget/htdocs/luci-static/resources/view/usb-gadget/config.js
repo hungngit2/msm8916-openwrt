@@ -100,24 +100,37 @@ return view.extend({
         o.rmempty = false;
 
         // =================================================================
-        // ACM Serial
+        // ACM Serial / Modem Bridge
         // =================================================================
         s = m.section(form.NamedSection, 'acm', 'function', 
-            _('ACM (Serial Console)'),
-            _('Provides /dev/ttyACM0 on host. Access: screen /dev/ttyACM0 115200'));
+            _('ACM (Serial / Modem AT Bridge)'),
+            _('Provides CDC ACM serial port on host. Can be used for shell console or bridging AT commands directly to modem for RouterOS LTE control.'));
 
-        o = s.option(form.Flag, 'enabled', _('Enable Serial Console'));
+        o = s.option(form.Flag, 'enabled', _('Enable Serial Port'));
         o.rmempty = false;
 
-        o = s.option(form.Flag, 'shell', _('Enable Login Shell'),
-            _('Provide shell access. Disable for raw TTY.'));
+        o = s.option(form.ListValue, 'mode', _('Serial Mode'));
+        o.value('shell', _('Login Shell (Root CLI Console)'));
+        o.value('modem_bridge', _('Modem AT Bridge (RouterOS / Host LTE Control)'));
+        o.value('raw', _('Raw TTY (Unbridged)'));
+        o.default = 'shell';
+
+        o = s.option(form.Value, 'modem_port', _('Modem AT Device'));
+        o.placeholder = '/dev/wwan0at1';
+        o.default = '/dev/wwan0at1';
+        o.depends('mode', 'modem_bridge');
+        o.description = _('Target modem character device to bridge to /dev/ttyGS0 (e.g. /dev/wwan0at1, /dev/wwan0at0).');
+
+        o = s.option(form.Flag, 'shell', _('Enable Login Shell (Legacy)'));
+        o.depends('mode', 'shell');
         o.default = '1';
 
         o = s.option(form.DummyValue, '_info', _('Connection Info'));
         o.rawhtml = true;
         o.cfgvalue = function() {
-            return '<strong>Linux/macOS:</strong> screen /dev/ttyACM0 115200<br>' +
-                   '<strong>Windows:</strong> Use PuTTY on COM port';
+            return '<strong>RouterOS LTE Passthrough:</strong> Connects /dev/ttyGS0 <-> /dev/wwan0at1 for /interface lte.<br>' +
+                   '<strong>Linux/macOS Shell:</strong> screen /dev/ttyACM0 115200<br>' +
+                   '<strong>Windows Shell:</strong> Use PuTTY on COM port';
         };
 
         // =================================================================

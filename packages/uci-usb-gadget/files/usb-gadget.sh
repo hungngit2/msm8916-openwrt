@@ -31,6 +31,8 @@ CFG_ACM=""
 CFG_UMS=""
 
 CFG_ACM_SHELL=""
+CFG_ACM_MODE=""
+CFG_ACM_MODEM_PORT=""
 
 CFG_UMS_IMAGE=""
 CFG_UMS_SIZE=""
@@ -67,6 +69,8 @@ load_config() {
     
     # ACM options
     config_get_bool CFG_ACM_SHELL acm shell 1
+    config_get CFG_ACM_MODE acm mode ""
+    config_get CFG_ACM_MODEM_PORT acm modem_port ""
     
     # UMS options
     config_get CFG_UMS_IMAGE ums image_path "/var/lib/usb-gadget/storage.img"
@@ -197,14 +201,36 @@ setup_acm() {
     mkdir -p "$func"
     ln -sf "$func" "${CFG_CONFIG_PATH}/"
     
-    # Manage shell in inittab
-    if [ "$CFG_ACM_SHELL" = "1" ]; then
+    # Clean shell from inittab first
+    sed -i '/ttyGS0/d' /etc/inittab
+    
+    if [ "$CFG_ACM_MODE" = "modem_bridge" ] || [ "$CFG_ACM_SHELL" = "0" -a "$CFG_ACM_MODE" != "raw" -a "$CFG_ACM_MODE" != "shell" ]; then
+        if [ "$CFG_ACM_MODE" = "modem_bridge" ]; then
+            log "ACM in Modem AT Bridge mode (RouterOS LTE control)"
+            if [ -x /etc/init.d/modem-at-bridge ]; then
+                /etc/init.d/modem-at-bridge restart 2>/dev/null || true
+            elif [ -x /usr/bin/modem_at_bridge ]; then
+                killall modem_at_bridge 2>/dev/null || true
+                /usr/bin/modem_at_bridge -d -g /dev/ttyGS0 -m "${CFG_ACM_MODEM_PORT:-/dev/wwan0at1}" 2>/dev/null || true
+            fi
+        else
+            log "ACM in raw TTY mode"
+        fi
+    elif [ "$CFG_ACM_SHELL" = "1" ]; then
         log "Enabling serial shell on ttyGS0"
-        sed -i '/ttyGS0/d' /etc/inittab
         echo "ttyGS0::askfirst:/usr/libexec/login.sh" >> /etc/inittab
+        if [ -x /etc/init.d/modem-at-bridge ]; then
+            /etc/init.d/modem-at-bridge stop 2>/dev/null || true
+        else
+            killall modem_at_bridge 2>/dev/null || true
+        fi
     else
-        log "ACM in raw TTY mode (removing shell from inittab)"
-        sed -i '/ttyGS0/d' /etc/inittab
+        log "ACM in raw TTY mode"
+        if [ -x /etc/init.d/modem-at-bridge ]; then
+            /etc/init.d/modem-at-bridge stop 2>/dev/null || true
+        else
+            killall modem_at_bridge 2>/dev/null || true
+        fi
     fi
     
     kill -HUP 1 2>/dev/null || true
@@ -455,6 +481,11 @@ teardown_gadget() {
     # Clean shell from inittab
     sed -i '/ttyGS0/d' /etc/inittab
     kill -HUP 1 2>/dev/null || true
+    if [ -x /etc/init.d/modem-at-bridge ]; then
+        /etc/init.d/modem-at-bridge stop 2>/dev/null || true
+    else
+        killall modem_at_bridge 2>/dev/null || true
+    fi
     
     log "Teardown complete"
     log "USB port available for host mode"
@@ -483,12 +514,14 @@ status() {
         # Show ACM status
         if [ "$CFG_ACM" = "1" ]; then
             echo ""
-            echo "Serial console:"
+            echo "Serial / ACM Port:"
             if [ -c /dev/ttyGS0 ]; then
-                if [ "$CFG_ACM_SHELL" = "1" ]; then
-                    echo "  /dev/ttyGS0 - Available (with shell)"
+                if pidof modem_at_bridge >/dev/null 2>&1; then
+                    echo "  /dev/ttyGS0 - Active (Modem AT Bridge -> RouterOS LTE control)"
+                elif [ "$CFG_ACM_SHELL" = "1" ]; then
+                    echo "  /dev/ttyGS0 - Active (Login Shell)"
                 else
-                    echo "  /dev/ttyGS0 - Available (raw TTY)"
+                    echo "  /dev/ttyGS0 - Active (Raw TTY)"
                 fi
             else
                 echo "  /dev/ttyGS0 - Not found"
